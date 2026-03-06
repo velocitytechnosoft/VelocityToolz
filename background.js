@@ -213,7 +213,10 @@ async function handleToolAccess(toolId, toolName, sendResponse) {
             }
         }
 
-        // 5. Open new tab to the tool
+        // 5. Small delay to let Chrome fully commit all cookies before opening the page
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // 6. Open new tab to the tool
         if (redirectUrl && redirectUrl.trim() !== '') {
             chrome.tabs.create({ url: redirectUrl.trim() });
         } else {

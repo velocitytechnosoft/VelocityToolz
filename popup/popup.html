@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VelocityTool - Premium Access</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="popup.css">
+</head>
+
+<body class="dark-theme">
+    <div class="container">
+        <!-- Header -->
+        <header>
+            <div class="logo">
+                <span class="logo-icon">⚡</span>
+                <h2>VelocityTool</h2>
+            </div>
+            <div id="header-user" class="header-user hidden">
+                <span id="welcome-text">User</span>
+                <button id="btn-logout" class="btn-icon-text">Logout</button>
+            </div>
+        </header>
+
+        <!-- Login Section -->
+        <div id="login-section" class="section active">
+            <div class="login-card">
+                <h3>Welcome Back</h3>
+                <p class="subtitle">Enter your membership credentials to access premium tools</p>
+                <form id="login-form">
+                    <div class="input-group">
+                        <label for="username">Username</label>
+                        <input type="text" id="username" placeholder="john_doe" required autocomplete="off">
+                    </div>
+                    <div class="input-group">
+                        <label for="password">Password</label>
+                        <input type="password" id="password" placeholder="••••••••" required>
+                    </div>
+                    <button type="submit" id="btn-login" class="btn primary-btn">Login Securely →</button>
+                </form>
+                <div id="login-msg" class="message"></div>
+            </div>
+        </div>
+
+        <!-- Dashboard Section -->
+        <div id="dashboard-section" class="section hidden">
+
+            <!-- Search bar -->
+            <div class="search-bar">
+                <span class="search-icon">🔍</span>
+                <input type="text" id="search-input" placeholder="Search tools..." autocomplete="off">
+            </div>
+
+            <!-- Category Tabs -->
+            <div class="category-tabs" id="category-tabs">
+                <button class="cat-tab active" data-cat="all">All</button>
+                <!-- Dynamic category tabs will be inserted here -->
+            </div>
+
+            <!-- Tool Grid -->
+            <div class="tool-grid" id="tool-grid">
+                <!-- Tool cards will be injected here by JS -->
+            </div>
+
+            <div id="action-msg" class="message"></div>
+        </div>
+
+        <!-- Footer -->
+        <footer>
+            <p>© 2026 VelocityTool Inc.</p>
+        </footer>
+    </div>
+
+    <script src="popup.js"></script>
+</body>
+
+</html>

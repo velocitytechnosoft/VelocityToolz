@@ -30,8 +30,10 @@
     "content_scripts": [
         {
             "matches": [
-                "http://*/*",
-                "https://*/*"
+                "*://*.ahrefs.com/*",
+                "*://*.semrush.com/*",
+                "*://*.labs.google/*",
+                "*://*.gemini.google.com/*"
             ],
             "js": [
                 "content.js"

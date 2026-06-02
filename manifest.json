@@ -11,10 +11,7 @@
     "permissions": [
         "storage",
         "activeTab",
-        "cookies",
-        "webRequest",
-        "declarativeNetRequest",
-        "alarms"
+        "cookies"
     ],
     "host_permissions": [
         "http://*/*",

@@ -11,80 +11,16 @@ const AES_SECRET = 'YOUR_SUPER_SECRET_AES_KEY_2026';
 // We need an addEventListener for modern MV3 message passing, or just onMessage.addListener
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'access_tool') {
-        handleToolAccess(request.tool_id, request.tool_name, sendResponse);
+        handleToolAccess(request.tool_id, request.tool_name, request.hwid, sendResponse);
         return true; // Keep the message channel open for async response
     }
 });
 
-// --- IP SECURITY: THE HEARTBEAT SHREDDER ---
-// Set an alarm to wake up the service worker every 1 minute
-chrome.runtime.onInstalled.addListener(() => {
-    chrome.alarms.create("ipSecurityCheck", { periodInMinutes: 1 });
-});
-chrome.runtime.onStartup.addListener(() => {
-    chrome.alarms.create("ipSecurityCheck", { periodInMinutes: 1 });
-});
+// --- IP SECURITY REMOVED ---
+// IP checks have been disabled to prevent errors on dynamic IP networks.
 
-chrome.alarms.onAlarm.addListener((alarm) => {
-    if (alarm.name === "ipSecurityCheck") {
-        checkIPSecurity();
-    }
-});
-
-async function checkIPSecurity() {
+async function handleToolAccess(toolId, toolName, hwid, sendResponse) {
     try {
-        const response = await fetch(`${API_BASE_URL}/verify_ip?_t=` + Date.now());
-        const data = await response.json();
-
-        // If the server explicitly commands a SHRED, destroy the session
-        if (data && data.action === 'SHRED') {
-            console.warn(`SECURITY ALERT: Unauthorized IP (${data.ip || 'Unknown'}) detected. Shredding cookies.`);
-            await executeShredder();
-        }
-    } catch (error) {
-        // Heartbeat check failed (e.g., user is offline, server is down).
-        // We fail silently and assume safe to prevent Chrome from logging an Error in the extension dashboard.
-    }
-}
-
-async function executeShredder() {
-    // 1. Clear Extension Local Storage (logs user out of extension)
-    await chrome.storage.local.clear();
-
-    // 2. Fetch all domains that belong to active tools and destroy cookies
-    try {
-        // We do a "best effort" wipe of common premium tool domains to cover tracks
-        const domainsToWipe = [
-            ".ahrefs.com", ".semrush.com", "ahrefs.com", "semrush.com",
-            ".google.com", ".labs.google", "labs.google", "gemini.google.com"
-        ];
-
-        for (let domain of domainsToWipe) {
-            await clearDomainCookies("http://" + domain.replace(/^\./, ''));
-            await clearDomainCookies("https://" + domain.replace(/^\./, ''));
-        }
-
-        console.log("SHREDDER COMPLETE: User session destroyed.");
-    } catch (err) {
-        console.error("Shredder encountered error during domain wipe:", err);
-    }
-}
-// ------------------------------------------
-
-async function handleToolAccess(toolId, toolName, sendResponse) {
-    try {
-        // 0. Pre-flight IP Security Check
-        try {
-            const ipCheckRes = await fetch(`${API_BASE_URL}/verify_ip?_t=` + Date.now());
-            const ipData = await ipCheckRes.json();
-            if (ipData && ipData.action === 'SHRED') {
-                const detectedIp = ipData.ip || 'Unknown';
-                console.warn(`BLOCKED: Unauthorized IP (${detectedIp}). Shredding...`);
-                await executeShredder();
-                sendResponse({ success: false, message: `SECURITY BLOCK: Your extension IP (${detectedIp}) is not whitelisted. Please add it in the Admin Dashboard.` });
-                return;
-            }
-        } catch (e) { /* Ignore network errors here to allow fallback */ }
 
         // 1. Get user session from local storage
         const storage = await chrome.storage.local.get(['user']);
@@ -102,7 +38,8 @@ async function handleToolAccess(toolId, toolName, sendResponse) {
             body: JSON.stringify({
                 user_id: user.user_id,
                 token: user.token,
-                tool_id: toolId
+                tool_id: toolId,
+                hwid: hwid
             })
         });
 
@@ -232,7 +169,8 @@ async function handleToolAccess(toolId, toolName, sendResponse) {
             body: JSON.stringify({
                 user_id: user.user_id,
                 token: user.token,
-                tool_id: toolId
+                tool_id: toolId,
+                hwid: hwid
             })
         }).catch(() => { }); // Silent failure — never block the user
 

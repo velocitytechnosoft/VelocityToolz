@@ -16,21 +16,40 @@ document.addEventListener('DOMContentLoaded', () => {
     let allTools = [];       // Full list loaded from server
     let activeCategory = 'all';
 
-    // --- BOOT: Check stored session ---
-    chrome.storage.local.get(['user'], (result) => {
-        if (result.user && result.user.token) {
-            // Check if session has expired (30 days)
-            if (result.user.expires_at) {
-                const expiry = new Date(result.user.expires_at);
-                if (new Date() > expiry) {
-                    // Session expired - force logout
-                    chrome.storage.local.remove(['user']);
-                    return; // Stay on login page
-                }
-            }
-            showDashboard(result.user);
+    let deviceId = '';
+
+    // --- INITIALIZE DEVICE ID ---
+    chrome.storage.local.get(['device_id'], (res) => {
+        if (res.device_id) {
+            deviceId = res.device_id;
+            bootSession();
+        } else {
+            // Generate a unique device ID
+            deviceId = crypto.randomUUID ? crypto.randomUUID() : Array.from(crypto.getRandomValues(new Uint8Array(16)))
+                .map(b => b.toString(16).padStart(2, '0')).join('');
+            chrome.storage.local.set({ device_id: deviceId }, () => {
+                bootSession();
+            });
         }
     });
+
+    function bootSession() {
+        // --- BOOT: Check stored session ---
+        chrome.storage.local.get(['user'], (result) => {
+            if (result.user && result.user.token) {
+                // Check if session has expired (30 days)
+                if (result.user.expires_at) {
+                    const expiry = new Date(result.user.expires_at);
+                    if (new Date() > expiry) {
+                        // Session expired - force logout
+                        chrome.storage.local.remove(['user']);
+                        return; // Stay on login page
+                    }
+                }
+                showDashboard(result.user);
+            }
+        });
+    }
 
     // --- LOGIN ---
     loginForm.addEventListener('submit', async (e) => {
@@ -49,7 +68,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const res = await fetch(`${API_BASE_URL}/login`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username, password })
+                body: JSON.stringify({ username, password, hwid: deviceId })
             });
             const data = await res.json();
             if (data.success) {
@@ -104,7 +123,8 @@ document.addEventListener('DOMContentLoaded', () => {
         chrome.runtime.sendMessage({
             action: 'access_tool',
             tool_id: toolId,
-            tool_name: toolName
+            tool_name: toolName,
+            hwid: deviceId
         }, (response) => {
             card.classList.remove('loading');
             if (chrome.runtime.lastError) {
@@ -132,11 +152,11 @@ document.addEventListener('DOMContentLoaded', () => {
         showMsg(actionMsg, 'Loading tools...', '');
 
         try {
-            // POST user_id so server can filter by user permissions
+            // POST user_id and hwid so server can filter by user permissions and check device blocking
             const res = await fetch(`${API_BASE_URL}/get_tools`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ user_id: user.user_id })
+                body: JSON.stringify({ user_id: user.user_id, token: user.token, hwid: deviceId })
             });
             const data = await res.json();
 
@@ -148,8 +168,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 buildCategoryTabs(allTools);
                 renderGrid();
                 actionMsg.textContent = '';
+            } else if (!data.success) {
+                // Fatal server error (blocked device, session expired, etc.) — force logout
+                const errorMsg = data.message || 'Access denied.';
+                chrome.storage.local.remove(['user'], () => {
+                    dashboardSection.classList.add('hidden');
+                    dashboardSection.classList.remove('active');
+                    loginSection.classList.remove('hidden');
+                    loginSection.classList.add('active');
+                    headerUser.classList.add('hidden');
+                    showMsg(loginMsg, '🚫 ' + errorMsg, 'error');
+                });
             } else {
-                toolGrid.innerHTML = `<div class="empty-state"><div class="empty-icon">🛠️</div><p>No tools available yet.</p></div>`;
+                // Authenticated but no tools assigned yet
+                toolGrid.innerHTML = `<div class="empty-state"><div class="empty-icon">🛠️</div><p>No tools assigned to your account yet. Contact your administrator.</p></div>`;
                 actionMsg.textContent = '';
             }
         } catch {

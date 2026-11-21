@@ -18,11 +18,17 @@
                 <span class="logo-icon">⚡</span>
                 <h2>VelocityTool</h2>
             </div>
-            <div id="header-user" class="header-user hidden">
-                <span id="welcome-text">User</span>
-                <button id="btn-logout" class="btn-icon-text">Logout</button>
+            <div class="header-right">
+                <button id="btn-copy-cookies" class="btn-cookie" title="Capture & copy all cookies from the current tab as JSON">🍪 Copy Cookies</button>
+                <div id="header-user" class="header-user hidden">
+                    <span id="welcome-text">User</span>
+                    <button id="btn-logout" class="btn-icon-text">Logout</button>
+                </div>
             </div>
         </header>
+
+        <!-- Cookie Copy Toast -->
+        <div id="cookie-toast" class="cookie-toast hidden"></div>
 
         <!-- Login Section -->
         <div id="login-section" class="section active">

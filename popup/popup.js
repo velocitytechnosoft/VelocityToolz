@@ -10,6 +10,103 @@ document.addEventListener('DOMContentLoaded', () => {
     const searchInput = document.getElementById('search-input');
     const categoryTabs = document.getElementById('category-tabs');
     const toolGrid = document.getElementById('tool-grid');
+    const btnCopyCookies = document.getElementById('btn-copy-cookies');
+    const cookieToast = document.getElementById('cookie-toast');
+
+    let toastTimer = null;
+
+    function showCookieToast(text, type) {
+        if (toastTimer) clearTimeout(toastTimer);
+        cookieToast.textContent = text;
+        cookieToast.className = `cookie-toast ${type}`;
+        toastTimer = setTimeout(() => {
+            cookieToast.classList.add('hidden');
+        }, 4500);
+    }
+
+    // --- CAPTURE & COPY CURRENT TAB COOKIES AS JSON ---
+    btnCopyCookies.addEventListener('click', async () => {
+        const originalLabel = btnCopyCookies.textContent;
+        btnCopyCookies.disabled = true;
+        btnCopyCookies.textContent = 'Copying...';
+
+        try {
+            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+            if (!tab || !tab.url || !/^https?:\/\//i.test(tab.url)) {
+                showCookieToast('Open a website tab (http/https) first.', 'error');
+                return;
+            }
+
+            const parsedUrl = new URL(tab.url);
+            const hostname = parsedUrl.hostname;
+
+            // Grab all cookies applicable to the active URL (includes parent domains like .google.com)
+            // plus any cookies scoped specifically to the current hostname
+            const [urlCookies, domainCookies] = await Promise.all([
+                chrome.cookies.getAll({ url: tab.url }),
+                chrome.cookies.getAll({ domain: hostname })
+            ]);
+
+            const seen = new Set();
+            const merged = [];
+            for (const c of [...urlCookies, ...domainCookies]) {
+                const key = `${c.domain}|${c.path}|${c.name}`;
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    const entry = {
+                        name: c.name,
+                        value: c.value,
+                        domain: c.domain,
+                        path: c.path,
+                        secure: c.secure,
+                        httpOnly: c.httpOnly,
+                        hostOnly: c.hostOnly,
+                        sameSite: c.sameSite
+                    };
+                    if (c.expirationDate) {
+                        entry.expirationDate = c.expirationDate;
+                    }
+                    merged.push(entry);
+                }
+            }
+
+            if (merged.length === 0) {
+                showCookieToast(`No cookies found for ${hostname}.`, 'error');
+                return;
+            }
+
+            const jsonStr = JSON.stringify(merged, null, 2);
+
+            try {
+                await navigator.clipboard.writeText(jsonStr);
+            } catch {
+                // Fallback copy method if Clipboard API is restricted
+                const ta = document.createElement('textarea');
+                ta.value = jsonStr;
+                ta.style.position = 'fixed';
+                ta.style.opacity = '0';
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+            }
+
+            btnCopyCookies.textContent = '✅ Copied!';
+            showCookieToast(`✅ Copied ${merged.length} cookies from ${hostname}! Paste directly in Admin.`, 'success');
+            setTimeout(() => {
+                btnCopyCookies.textContent = originalLabel;
+            }, 2000);
+        } catch (err) {
+            console.error('Cookie capture failed:', err);
+            showCookieToast('Failed to capture cookies: ' + err.message, 'error');
+            btnCopyCookies.textContent = originalLabel;
+        } finally {
+            btnCopyCookies.disabled = false;
+            if (btnCopyCookies.textContent === 'Copying...') {
+                btnCopyCookies.textContent = originalLabel;
+            }
+        }
+    });
 
     const API_BASE_URL = 'https://velocitytechnosoft.com/api';
 

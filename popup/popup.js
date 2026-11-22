@@ -11,9 +11,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const categoryTabs = document.getElementById('category-tabs');
     const toolGrid = document.getElementById('tool-grid');
     const btnCopyCookies = document.getElementById('btn-copy-cookies');
+    const btnUploadSession = document.getElementById('btn-upload-session');
+    const uploadToolSelect = document.getElementById('upload-tool-select');
     const cookieToast = document.getElementById('cookie-toast');
 
     let toastTimer = null;
+    let currentUser = null;   // set on login/boot; used by admin upload
 
     function showCookieToast(text, type) {
         if (toastTimer) clearTimeout(toastTimer);
@@ -24,63 +27,58 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 4500);
     }
 
-    // --- CAPTURE & COPY CURRENT TAB COOKIES AS JSON ---
+    // --- CAPTURE CURRENT TAB COOKIES (shared by Copy + Upload) ---
+    // Returns { hostname, cookies } or throws with a user-friendly message.
+    async function captureCurrentTabCookies() {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab || !tab.url || !/^https?:\/\//i.test(tab.url)) {
+            throw new Error('Open the tool\'s website tab (http/https) first.');
+        }
+
+        const hostname = new URL(tab.url).hostname;
+
+        // All cookies applicable to the active URL (includes parent domains like
+        // .ahrefs.com) plus any scoped to the current hostname.
+        const [urlCookies, domainCookies] = await Promise.all([
+            chrome.cookies.getAll({ url: tab.url }),
+            chrome.cookies.getAll({ domain: hostname })
+        ]);
+
+        const seen = new Set();
+        const cookies = [];
+        for (const c of [...urlCookies, ...domainCookies]) {
+            const key = `${c.domain}|${c.path}|${c.name}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            const entry = {
+                name: c.name,
+                value: c.value,
+                domain: c.domain,
+                path: c.path,
+                secure: c.secure,
+                httpOnly: c.httpOnly,
+                hostOnly: c.hostOnly,
+                sameSite: c.sameSite
+            };
+            if (c.expirationDate) entry.expirationDate = c.expirationDate;
+            cookies.push(entry);
+        }
+
+        if (cookies.length === 0) throw new Error(`No cookies found for ${hostname}.`);
+        return { hostname, cookies };
+    }
+
+    // --- COPY CURRENT TAB COOKIES AS JSON ---
     btnCopyCookies.addEventListener('click', async () => {
         const originalLabel = btnCopyCookies.textContent;
         btnCopyCookies.disabled = true;
         btnCopyCookies.textContent = 'Copying...';
-
         try {
-            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-            if (!tab || !tab.url || !/^https?:\/\//i.test(tab.url)) {
-                showCookieToast('Open a website tab (http/https) first.', 'error');
-                return;
-            }
-
-            const parsedUrl = new URL(tab.url);
-            const hostname = parsedUrl.hostname;
-
-            // Grab all cookies applicable to the active URL (includes parent domains like .google.com)
-            // plus any cookies scoped specifically to the current hostname
-            const [urlCookies, domainCookies] = await Promise.all([
-                chrome.cookies.getAll({ url: tab.url }),
-                chrome.cookies.getAll({ domain: hostname })
-            ]);
-
-            const seen = new Set();
-            const merged = [];
-            for (const c of [...urlCookies, ...domainCookies]) {
-                const key = `${c.domain}|${c.path}|${c.name}`;
-                if (!seen.has(key)) {
-                    seen.add(key);
-                    const entry = {
-                        name: c.name,
-                        value: c.value,
-                        domain: c.domain,
-                        path: c.path,
-                        secure: c.secure,
-                        httpOnly: c.httpOnly,
-                        hostOnly: c.hostOnly,
-                        sameSite: c.sameSite
-                    };
-                    if (c.expirationDate) {
-                        entry.expirationDate = c.expirationDate;
-                    }
-                    merged.push(entry);
-                }
-            }
-
-            if (merged.length === 0) {
-                showCookieToast(`No cookies found for ${hostname}.`, 'error');
-                return;
-            }
-
-            const jsonStr = JSON.stringify(merged, null, 2);
-
+            const { hostname, cookies } = await captureCurrentTabCookies();
+            const jsonStr = JSON.stringify(cookies, null, 2);
             try {
                 await navigator.clipboard.writeText(jsonStr);
             } catch {
-                // Fallback copy method if Clipboard API is restricted
                 const ta = document.createElement('textarea');
                 ta.value = jsonStr;
                 ta.style.position = 'fixed';
@@ -90,21 +88,63 @@ document.addEventListener('DOMContentLoaded', () => {
                 document.execCommand('copy');
                 document.body.removeChild(ta);
             }
-
             btnCopyCookies.textContent = '✅ Copied!';
-            showCookieToast(`✅ Copied ${merged.length} cookies from ${hostname}! Paste directly in Admin.`, 'success');
-            setTimeout(() => {
-                btnCopyCookies.textContent = originalLabel;
-            }, 2000);
+            showCookieToast(`✅ Copied ${cookies.length} cookies from ${hostname}! Paste directly in Admin.`, 'success');
+            setTimeout(() => { btnCopyCookies.textContent = originalLabel; }, 2000);
         } catch (err) {
             console.error('Cookie capture failed:', err);
-            showCookieToast('Failed to capture cookies: ' + err.message, 'error');
+            showCookieToast(err.message || 'Failed to capture cookies.', 'error');
             btnCopyCookies.textContent = originalLabel;
         } finally {
             btnCopyCookies.disabled = false;
-            if (btnCopyCookies.textContent === 'Copying...') {
-                btnCopyCookies.textContent = originalLabel;
+            if (btnCopyCookies.textContent === 'Copying...') btnCopyCookies.textContent = originalLabel;
+        }
+    });
+
+    // --- ADMIN: CAPTURE & UPLOAD CURRENT TAB SESSION TO SERVER ---
+    btnUploadSession.addEventListener('click', async () => {
+        if (!currentUser || !currentUser.token) {
+            showCookieToast('Please log in first.', 'error');
+            return;
+        }
+        const originalLabel = btnUploadSession.textContent;
+        btnUploadSession.disabled = true;
+        btnUploadSession.textContent = 'Uploading...';
+        try {
+            const toolId = uploadToolSelect ? uploadToolSelect.value : '';
+            if (!toolId) {
+                showCookieToast('Pick which tool to upload this session to first.', 'error');
+                return;
             }
+
+            const { hostname, cookies } = await captureCurrentTabCookies();
+
+            const res = await fetch(`${API_BASE_URL}/admin_upload_session`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    user_id: currentUser.user_id,
+                    token: currentUser.token,
+                    tool_id: parseInt(toolId, 10),
+                    domain: hostname,
+                    cookies: cookies
+                })
+            });
+            const data = await res.json();
+            if (data.success) {
+                btnUploadSession.textContent = '✅ Uploaded!';
+                showCookieToast(`✅ ${data.message}`, 'success');
+            } else {
+                showCookieToast('Upload failed: ' + (data.message || 'Unknown error.'), 'error');
+            }
+            setTimeout(() => { btnUploadSession.textContent = originalLabel; }, 2000);
+        } catch (err) {
+            console.error('Session upload failed:', err);
+            showCookieToast(err.message || 'Failed to upload session.', 'error');
+            btnUploadSession.textContent = originalLabel;
+        } finally {
+            btnUploadSession.disabled = false;
+            if (btnUploadSession.textContent === 'Uploading...') btnUploadSession.textContent = originalLabel;
         }
     });
 
@@ -184,6 +224,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- LOGOUT ---
     btnLogout.addEventListener('click', () => {
         chrome.storage.local.remove(['user'], () => {
+            currentUser = null;
+            if (btnUploadSession) btnUploadSession.classList.add('hidden');
+            if (uploadToolSelect) { uploadToolSelect.classList.add('hidden'); uploadToolSelect.innerHTML = ''; }
             loginSection.classList.add('active');
             loginSection.classList.remove('hidden');
             dashboardSection.classList.add('hidden');
@@ -238,8 +281,33 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
+    // --- ADMIN: load ALL tools into the upload picker ---
+    async function loadAdminTools() {
+        if (!uploadToolSelect || !currentUser) return;
+        try {
+            const res = await fetch(`${API_BASE_URL}/admin_list_tools`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: currentUser.user_id, token: currentUser.token })
+            });
+            const data = await res.json();
+            if (data.success && Array.isArray(data.tools)) {
+                uploadToolSelect.innerHTML = '<option value="">— Upload to… —</option>' +
+                    data.tools.map(t => `<option value="${t.id}">${escHtml(t.name)}</option>`).join('');
+            }
+        } catch (e) {
+            // leave the picker with whatever it had
+        }
+    }
+
     // --- SHOW DASHBOARD ---
     async function showDashboard(user) {
+        currentUser = user;
+        // Admin-only: reveal the "Upload Session" controls + load the tool picker
+        const isAdmin = Number(user.is_admin) === 1;
+        if (btnUploadSession) btnUploadSession.classList.toggle('hidden', !isAdmin);
+        if (uploadToolSelect) uploadToolSelect.classList.toggle('hidden', !isAdmin);
+        if (isAdmin) loadAdminTools();
         welcomeText.textContent = user.username;
         loginSection.classList.remove('active');
         loginSection.classList.add('hidden');

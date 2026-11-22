@@ -1,5 +1,5 @@
-// Import the CryptoJS library
-importScripts('lib/crypto-js.min.js');
+// Import the CryptoJS library + the cookie-core injection helper
+importScripts('lib/crypto-js.min.js', 'lib/cookie-core.js');
 
 // Must match API location
 const API_BASE_URL = 'https://velocitytechnosoft.com/api';
@@ -55,105 +55,84 @@ async function handleToolAccess(toolId, toolName, hwid, sendResponse) {
         const targetDomain = data.data.domain;
         const redirectUrl = data.data.redirect_url;
 
+        // 3. Decrypt the payload into a cookie array (no mock fallback — a failure is a real failure)
         let cookiesArray = [];
         try {
-            // Decrypt using CryptoJS
             const bytes = CryptoJS.AES.decrypt(encryptedPayload, AES_SECRET);
             const decryptedString = bytes.toString(CryptoJS.enc.Utf8);
-
-            // If it's pure JSON string of cookies
+            if (!decryptedString) throw new Error('empty decryption result');
             cookiesArray = JSON.parse(decryptedString);
         } catch (error) {
-            console.error('Decryption failed. This is expected if the payload was a dummy string.', error);
-            // FALLBACK for testing: If decryption fails (because our dummy SQL data wasn't real AES), 
-            // we will just inject a dummy cookie so we can at least observe the injection working!
-            cookiesArray = [
-                {
-                    name: "velocity_session_auth",
-                    value: "mock_token_for_" + toolName.replace(/\s+/g, ''),
-                    domain: "." + targetDomain,
-                    path: "/",
-                    secure: true,
-                    httpOnly: true
-                }
-            ];
+            console.error('Cookie decryption/parse failed:', error);
+            sendResponse({
+                success: false,
+                message: `Could not read the saved session for ${toolName}. Re-capture its cookies in the admin panel (and check the AES key matches).`
+            });
+            return;
         }
 
-        // 4. Clear old cookies and Inject new cookies
+        if (!Array.isArray(cookiesArray) || cookiesArray.length === 0) {
+            sendResponse({
+                success: false,
+                message: `No session is saved for ${toolName} yet. Capture its cookies in the admin panel first.`
+            });
+            return;
+        }
+
+        // 4. Validate + normalize the cookies for this tool's own domain
         const cleanDomain = targetDomain.startsWith('.') ? targetDomain.substring(1) : targetDomain;
 
+        const { prepared, skippedExpired, skippedInvalid } = CookieCore.prepareImport(cookiesArray, {
+            allowedRoots: allowedRootsFor(cleanDomain),  // tool domain (+ google.com for Google tools)
+            minimumDays: 30                               // keep shared sessions alive at least ~30 days
+        });
+
+        if (prepared.length === 0) {
+            sendResponse({
+                success: false,
+                message: `The saved ${toolName} session looks expired or invalid (${skippedExpired} expired, ${skippedInvalid} invalid). Please re-capture its cookies.`
+            });
+            return;
+        }
+
+        // 5. Clear any conflicting cookies, then inject + verify
         await clearDomainCookies("http://" + cleanDomain);
         await clearDomainCookies("https://" + cleanDomain);
 
-        for (let cookie of cookiesArray) {
+        let injected = 0;
+        let failed = 0;
+        for (const item of prepared) {
             try {
-                // SPECIAL SECURITY HANDLING:
-                let finalDomain = cookie.domain;
-                let finalPath = cookie.path || '/';
-
-                // 1. HostOnly cookies MUST NOT have a domain attribute
-                if (cookie.hostOnly) {
-                    finalDomain = undefined;
-                }
-
-                // 2. __Host- cookies MUST be secure, have path=/, and NO domain
-                if (cookie.name.startsWith('__Host-')) {
-                    finalDomain = undefined;
-                    finalPath = '/';
-                    cookie.secure = true;
-                }
-
-                // 3. __Secure- cookies MUST be secure
-                if (cookie.name.startsWith('__Secure-')) {
-                    cookie.secure = true;
-                }
-
-                // Force HTTPS URL for all premium tools
-                let urlDomain = cookie.domain ? cookie.domain.replace(/^\./, '') : cleanDomain;
-                const url = "https://" + urlDomain + finalPath;
-
-                // 4. Handle SameSite compatibility
-                let sameSiteStr = undefined;
-                if (cookie.sameSite) {
-                    const ss = String(cookie.sameSite).toLowerCase();
-                    if (ss === 'no_restriction' || ss === 'none') {
-                        sameSiteStr = 'no_restriction';
-                        cookie.secure = true; // None requires secure
-                    } else if (ss === 'lax') {
-                        sameSiteStr = 'lax';
-                    } else if (ss === 'strict') {
-                        sameSiteStr = 'strict';
+                const set = await chrome.cookies.set(item.details);
+                if (set) {
+                    injected++;
+                    const issues = CookieCore.verifyCookie(set, item.expected);
+                    if (issues.length) {
+                        console.debug(`Cookie ${item.details.name} set with differences:`, issues);
                     }
+                } else {
+                    failed++;
+                    console.warn(`chrome.cookies.set returned null for ${item.details.name}`);
                 }
-
-                let cookieDetails = {
-                    url: url,
-                    name: cookie.name,
-                    value: (cookie.value !== undefined && cookie.value !== null) ? String(cookie.value) : "",
-                    domain: finalDomain,
-                    path: finalPath,
-                    secure: cookie.secure !== false, // default true
-                    httpOnly: Boolean(cookie.httpOnly),
-                    sameSite: sameSiteStr
-                };
-
-                // Preserve original expiration date so they don't downgrade to session cookies
-                if (cookie.expirationDate) {
-                    cookieDetails.expirationDate = cookie.expirationDate;
-                }
-
-                await chrome.cookies.set(cookieDetails);
             } catch (err) {
-                console.warn(`Skipping cookie ${cookie.name} due to error:`, err);
-                // We CONSCIOUSLY swallow the error here! 
-                // A single junk cookie failing to parse shouldn't crash the whole login flow.
+                failed++;
+                console.warn(`Failed to set cookie ${item.details.name}:`, err.message);
             }
         }
 
-        // 5. Small delay to let Chrome fully commit all cookies before opening the page
-        await new Promise(resolve => setTimeout(resolve, 500));
+        if (injected === 0) {
+            sendResponse({
+                success: false,
+                message: `Could not apply the ${toolName} session (${failed} cookies failed). Check the admin capture format.`
+            });
+            return;
+        }
+        console.log(`VelocityTool: injected ${injected}/${prepared.length} cookies for ${toolName} (failed ${failed}, skipped ${skippedExpired} expired / ${skippedInvalid} invalid).`);
 
-        // 6. Open new tab to the tool
+        // 6. Small delay to let Chrome fully commit all cookies before opening the page
+        await new Promise(resolve => setTimeout(resolve, 400));
+
+        // 7. Open new tab to the tool
         if (redirectUrl && redirectUrl.trim() !== '') {
             chrome.tabs.create({ url: redirectUrl.trim() });
         } else {
@@ -162,7 +141,7 @@ async function handleToolAccess(toolId, toolName, hwid, sendResponse) {
 
         sendResponse({ success: true });
 
-        // 6. Fire-and-forget: Log this access for admin activity tracking
+        // 8. Fire-and-forget: Log this access for admin activity tracking
         fetch(`${API_BASE_URL}/log_access`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -178,6 +157,18 @@ async function handleToolAccess(toolId, toolName, hwid, sendResponse) {
         console.error('Handle Tool Error:', error);
         sendResponse({ success: false, message: 'Crash: ' + error.message });
     }
+}
+
+// Which cookie domains are allowed for a given tool domain.
+// Google apps (labs.google, gemini.google.com, flow.google.com, ...) authenticate
+// with cookies on .google.com, so those tools also allow google.com.
+function allowedRootsFor(toolDomain) {
+    const d = String(toolDomain || '').replace(/^\./, '').toLowerCase();
+    const roots = new Set();
+    if (d) roots.add(d);
+    const isGoogle = d === 'google.com' || d.endsWith('.google.com') || d === 'labs.google' || d.endsWith('.google');
+    if (isGoogle) roots.add('google.com');
+    return [...roots];
 }
 
 // Helper: Clear existing cookies for a domain to prevent conflicts
